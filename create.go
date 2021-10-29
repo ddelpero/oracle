@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"database/sql"
 	"reflect"
+	"fmt"
 
 	"github.com/thoas/go-funk"
 	"gorm.io/gorm"
@@ -11,7 +12,7 @@ import (
 	"gorm.io/gorm/clause"
 	gormSchema "gorm.io/gorm/schema"
 
-	"github.com/cengsin/oracle/clauses"
+	"github.com/ddelpero/oracle/clauses"
 )
 
 func Create(db *gorm.DB) {
