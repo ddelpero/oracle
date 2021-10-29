@@ -109,10 +109,9 @@ func Create(db *gorm.DB) {
 						}
 					}
 
-					if idx < len(stmt.Vars)-1 {
-						// Temp hack to not bind the returning value.
-						// The variable is already bound to the schema Field that has the default value, so we don't want to bind
-						// it again
+					//don't add the returning clause to the bind vars
+					_, isClauseExpr := val.(clause.Expr)
+					if !isClauseExpr {
 						stmt.Vars[idx] = val
 					}
 				}
