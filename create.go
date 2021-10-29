@@ -3,13 +3,15 @@ package oracle
 import (
 	"bytes"
 	"database/sql"
-	"reflect"
 	"fmt"
+	"reflect"
 
 	"github.com/thoas/go-funk"
 	"gorm.io/gorm"
 	"gorm.io/gorm/callbacks"
 	"gorm.io/gorm/clause"
+
+	
 	gormSchema "gorm.io/gorm/schema"
 
 	"github.com/ddelpero/oracle/clauses"
@@ -108,7 +110,7 @@ func Create(db *gorm.DB) {
 					}
 
 					if idx < len(stmt.Vars)-1 {
-					        // Temp hack to not bind the returning value. 
+						// Temp hack to not bind the returning value.
 						// The variable is already bound to the schema Field that has the default value, so we don't want to bind
 						// it again
 						stmt.Vars[idx] = val
@@ -193,7 +195,7 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 		case reflect.Slice, reflect.Array:
 			stmt.SQL.Grow(stmt.ReflectValue.Len() * 18)
 			values.Values = make([][]interface{}, stmt.ReflectValue.Len())
-			defaultValueFieldsHavingValue := map[*schema.Field][]interface{}{}
+			defaultValueFieldsHavingValue := map[*gormSchema.Field][]interface{}{}
 			if stmt.ReflectValue.Len() == 0 {
 				stmt.AddError(gorm.ErrEmptySlice)
 				return
@@ -295,11 +297,11 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 								if field.AutoUpdateTime > 0 {
 									assignment := clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: curTime}
 									switch field.AutoUpdateTime {
-									case schema.UnixNanosecond:
+									case gormSchema.UnixNanosecond:
 										assignment.Value = curTime.UnixNano()
-									case schema.UnixMillisecond:
+									case gormSchema.UnixMillisecond:
 										assignment.Value = curTime.UnixNano() / 1e6
-									case schema.UnixSecond:
+									case gormSchema.UnixSecond:
 										assignment.Value = curTime.Unix()
 									}
 
@@ -327,4 +329,3 @@ func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
 
 	return values
 }
-
