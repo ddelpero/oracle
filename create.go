@@ -32,7 +32,7 @@ func Create(db *gorm.DB) {
 	}
 
 	if stmt.SQL.String() == "" {
-		values := callbacks.ConvertToCreateValues(stmt)
+		values := ConvertToCreateValues(stmt)
 		onConflict, hasConflict := stmt.Clauses["ON CONFLICT"].Expression.(clause.OnConflict)
 		// are all columns in value the primary fields in schema only?
 		if hasConflict && funk.Contains(
@@ -106,7 +106,12 @@ func Create(db *gorm.DB) {
 						}
 					}
 
-					stmt.Vars[idx] = val
+					if idx < len(stmt.Vars)-1 {
+					        // Temp hack to not bind the returning value. 
+						// The variable is already bound to the schema Field that has the default value, so we don't want to bind
+						// it again
+						stmt.Vars[idx] = val
+					}
 				}
 				// and then we insert each row one by one then put the returning values back (i.e. last return id => smart insert)
 				// we keep track of the index so that the sub-reflected value is also correct
@@ -150,3 +155,175 @@ func Create(db *gorm.DB) {
 		}
 	}
 }
+
+// ConvertToCreateValues convert to create values
+// Copy of func from gorm callbacks/create.go with change to struct FieldsWithDefaultDBValue
+func ConvertToCreateValues(stmt *gorm.Statement) (values clause.Values) {
+	curTime := stmt.DB.NowFunc()
+
+	switch value := stmt.Dest.(type) {
+	case map[string]interface{}:
+		values = callbacks.ConvertMapToValuesForCreate(stmt, value)
+	case *map[string]interface{}:
+		values = callbacks.ConvertMapToValuesForCreate(stmt, *value)
+	case []map[string]interface{}:
+		values = callbacks.ConvertSliceOfMapToValuesForCreate(stmt, value)
+	case *[]map[string]interface{}:
+		values = callbacks.ConvertSliceOfMapToValuesForCreate(stmt, *value)
+	default:
+		var (
+			selectColumns, restricted = stmt.SelectAndOmitColumns(true, false)
+			_, updateTrackTime        = stmt.Get("gorm:update_track_time")
+			isZero                    bool
+		)
+		stmt.Settings.Delete("gorm:update_track_time")
+
+		values = clause.Values{Columns: make([]clause.Column, 0, len(stmt.Schema.DBNames))}
+
+		for _, db := range stmt.Schema.DBNames {
+			if field := stmt.Schema.FieldsByDBName[db]; !field.HasDefaultValue || field.DefaultValueInterface != nil {
+				if v, ok := selectColumns[db]; (ok && v) || (!ok && (!restricted || field.AutoCreateTime > 0 || field.AutoUpdateTime > 0)) {
+					values.Columns = append(values.Columns, clause.Column{Name: db})
+				}
+			}
+		}
+
+		switch stmt.ReflectValue.Kind() {
+		case reflect.Slice, reflect.Array:
+			stmt.SQL.Grow(stmt.ReflectValue.Len() * 18)
+			values.Values = make([][]interface{}, stmt.ReflectValue.Len())
+			defaultValueFieldsHavingValue := map[*schema.Field][]interface{}{}
+			if stmt.ReflectValue.Len() == 0 {
+				stmt.AddError(gorm.ErrEmptySlice)
+				return
+			}
+
+			for i := 0; i < stmt.ReflectValue.Len(); i++ {
+				rv := reflect.Indirect(stmt.ReflectValue.Index(i))
+				if !rv.IsValid() {
+					stmt.AddError(fmt.Errorf("slice data #%v is invalid: %w", i, gorm.ErrInvalidData))
+					return
+				}
+
+				values.Values[i] = make([]interface{}, len(values.Columns))
+				for idx, column := range values.Columns {
+					field := stmt.Schema.FieldsByDBName[column.Name]
+					if values.Values[i][idx], isZero = field.ValueOf(rv); isZero {
+						if field.DefaultValueInterface != nil {
+							values.Values[i][idx] = field.DefaultValueInterface
+							field.Set(rv, field.DefaultValueInterface)
+						} else if field.AutoCreateTime > 0 || field.AutoUpdateTime > 0 {
+							field.Set(rv, curTime)
+							values.Values[i][idx], _ = field.ValueOf(rv)
+						}
+					} else if field.AutoUpdateTime > 0 && updateTrackTime {
+						field.Set(rv, curTime)
+						values.Values[i][idx], _ = field.ValueOf(rv)
+					}
+				}
+
+				for _, field := range stmt.Schema.FieldsWithDefaultDBValue {
+					if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) {
+						if v, isZero := field.ValueOf(rv); !isZero {
+							if len(defaultValueFieldsHavingValue[field]) == 0 {
+								defaultValueFieldsHavingValue[field] = make([]interface{}, stmt.ReflectValue.Len())
+							}
+							defaultValueFieldsHavingValue[field][i] = v
+						}
+					}
+				}
+			}
+
+			for field, vs := range defaultValueFieldsHavingValue {
+				values.Columns = append(values.Columns, clause.Column{Name: field.DBName})
+				for idx := range values.Values {
+					if vs[idx] == nil {
+						values.Values[idx] = append(values.Values[idx], stmt.Dialector.DefaultValueOf(field))
+					} else {
+						values.Values[idx] = append(values.Values[idx], vs[idx])
+					}
+				}
+			}
+		case reflect.Struct:
+			values.Values = [][]interface{}{make([]interface{}, len(values.Columns))}
+			for idx, column := range values.Columns {
+				field := stmt.Schema.FieldsByDBName[column.Name]
+				if values.Values[0][idx], isZero = field.ValueOf(stmt.ReflectValue); isZero {
+					if field.DefaultValueInterface != nil {
+						values.Values[0][idx] = field.DefaultValueInterface
+						field.Set(stmt.ReflectValue, field.DefaultValueInterface)
+					} else if field.AutoCreateTime > 0 || field.AutoUpdateTime > 0 {
+						field.Set(stmt.ReflectValue, curTime)
+						values.Values[0][idx], _ = field.ValueOf(stmt.ReflectValue)
+					}
+				} else if field.AutoUpdateTime > 0 && updateTrackTime {
+					field.Set(stmt.ReflectValue, curTime)
+					values.Values[0][idx], _ = field.ValueOf(stmt.ReflectValue)
+				}
+			}
+
+			for _, field := range stmt.Schema.FieldsWithDefaultDBValue {
+				if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) {
+					_, isZero := field.ValueOf(stmt.ReflectValue)
+					if !isZero {
+
+						values.Columns = append(values.Columns, clause.Column{Name: field.DBName})
+						// values.Values[0] = append(values.Values[0], v)
+						// Setting this to v sets the values clause to the value passed in the struct,
+						// which since it isZero will be 0
+						// Instead, for Oracle at least, it should be the field.DefaultValue
+						values.Values[0] = append(values.Values[0], clause.Expr{SQL: field.DefaultValue})
+					}
+				}
+			}
+		default:
+			stmt.AddError(gorm.ErrInvalidData)
+		}
+	}
+
+	if c, ok := stmt.Clauses["ON CONFLICT"]; ok {
+		if onConflict, _ := c.Expression.(clause.OnConflict); onConflict.UpdateAll {
+			if stmt.Schema != nil && len(values.Columns) >= 1 {
+				selectColumns, restricted := stmt.SelectAndOmitColumns(true, true)
+
+				columns := make([]string, 0, len(values.Columns)-1)
+				for _, column := range values.Columns {
+					if field := stmt.Schema.LookUpField(column.Name); field != nil {
+						if v, ok := selectColumns[field.DBName]; (ok && v) || (!ok && !restricted) {
+							if !field.PrimaryKey && (!field.HasDefaultValue || field.DefaultValueInterface != nil) && field.AutoCreateTime == 0 {
+								if field.AutoUpdateTime > 0 {
+									assignment := clause.Assignment{Column: clause.Column{Name: field.DBName}, Value: curTime}
+									switch field.AutoUpdateTime {
+									case schema.UnixNanosecond:
+										assignment.Value = curTime.UnixNano()
+									case schema.UnixMillisecond:
+										assignment.Value = curTime.UnixNano() / 1e6
+									case schema.UnixSecond:
+										assignment.Value = curTime.Unix()
+									}
+
+									onConflict.DoUpdates = append(onConflict.DoUpdates, assignment)
+								} else {
+									columns = append(columns, column.Name)
+								}
+							}
+						}
+					}
+				}
+
+				onConflict.DoUpdates = append(onConflict.DoUpdates, clause.AssignmentColumns(columns)...)
+
+				// use primary fields as default OnConflict columns
+				if len(onConflict.Columns) == 0 {
+					for _, field := range stmt.Schema.PrimaryFields {
+						onConflict.Columns = append(onConflict.Columns, clause.Column{Name: field.DBName})
+					}
+				}
+				stmt.AddClause(onConflict)
+			}
+		}
+	}
+
+	return values
+}
+
