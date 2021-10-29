@@ -50,7 +50,7 @@ func (d Dialector) Initialize(db *gorm.DB) (err error) {
 	d.DefaultStringSize = 1024
 
 	// register callbacks
-	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{WithReturning: true})
+	callbacks.RegisterDefaultCallbacks(db, &callbacks.Config{})
 
 	d.DriverName = "godror"
 
